@@ -1,9 +1,14 @@
 import React from 'react';
-import { Box, Grid, Text, Badge, IconButton, Flex, Tooltip, Card, CardBody } from '@chakra-ui/react';
+import { Box, Grid, Text, Badge, IconButton, Flex, Tooltip, Card, CardBody, Select, Container, Spinner, useToast, HStack } from '@chakra-ui/react';
 import { HeartIcon, ShareIcon } from '@heroicons/react/24/outline';
 import { HeartIcon as HeartSolidIcon } from '@heroicons/react/24/solid';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { keyframes } from '@emotion/react';
+import { categories } from '../data/pickupLines';
+import { pickupLineService } from '../services/pickupLineService';
+import type { Database } from '../lib/database.types';
+
+type PickupLine = Database['public']['Tables']['pickup_lines']['Row'];
 
 const float = keyframes`
   0% { transform: translateY(0px) rotate(0deg); }
@@ -98,26 +103,86 @@ const ConfettiExplosion = ({ active }: { active: boolean }) => {
   );
 };
 
-const pickupLines = [
-  { id: 1, text: "Are you a magician? Because whenever I look at you, everyone else disappears.", category: "Cheesy" },
-  { id: 2, text: "Do you have a map? I keep getting lost in your eyes.", category: "Classic" },
-  { id: 3, text: "Are you a camera? Because every time I look at you, I smile.", category: "Cute" },
-];
-
 export default function Browse() {
-  const [hoveredCard, setHoveredCard] = useState<number | null>(null);
-  const [likedCards, setLikedCards] = useState<number[]>([]);
-  const [animatingCards, setAnimatingCards] = useState<{[key: number]: string}>({});
-  const [showConfetti, setShowConfetti] = useState<number | null>(null);
+  const [hoveredCard, setHoveredCard] = useState<string | null>(null);
+  const [likedCards, setLikedCards] = useState<string[]>([]);
+  const [animatingCards, setAnimatingCards] = useState<{[key: string]: string}>({});
+  const [showConfetti, setShowConfetti] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [pickupLines, setPickupLines] = useState<PickupLine[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
-  const handleLike = (id: number) => {
-    if (likedCards.includes(id)) {
-      setLikedCards(likedCards.filter(cardId => cardId !== id));
-    } else {
-      setShowConfetti(id);
-      setLikedCards([...likedCards, id]);
-      setAnimatingCards({ ...animatingCards, [id]: 'heartBeat' });
+  // Fetch pickup lines on mount and when category changes
+  useEffect(() => {
+    async function fetchPickupLines() {
+      try {
+        setIsLoading(true);
+        setError(null);
+        
+        const data = selectedCategory === 'all'
+          ? await pickupLineService.getAll()
+          : await pickupLineService.getByCategory(selectedCategory);
+        
+        setPickupLines(data);
+      } catch (err) {
+        setError('Failed to load pickup lines');
+        toast({
+          title: 'Error',
+          description: 'Failed to load pickup lines',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchPickupLines();
+  }, [selectedCategory, toast]);
+
+  // Fetch user's liked cards on mount
+  useEffect(() => {
+    async function fetchUserLikes() {
+      try {
+        // TODO: Replace with actual user ID from auth
+        const userId = 'temp-user-id';
+        const likedIds = await pickupLineService.getUserLikes(userId);
+        setLikedCards(likedIds);
+      } catch (err) {
+        console.error('Failed to fetch user likes:', err);
+      }
+    }
+
+    fetchUserLikes();
+  }, []);
+
+  const handleLike = async (id: string) => {
+    try {
+      // TODO: Replace with actual user ID from auth
+      const userId = 'temp-user-id';
       
+      setShowConfetti(id);
+      const isNowLiked = await pickupLineService.toggleLike(id, userId);
+      
+      if (isNowLiked) {
+        setLikedCards([...likedCards, id]);
+        setAnimatingCards({ ...animatingCards, [id]: 'heartBeat' });
+      } else {
+        setLikedCards(likedCards.filter(cardId => cardId !== id));
+      }
+      
+      // Update the pickup lines list to reflect the new likes count
+      setPickupLines(prevLines =>
+        prevLines.map(line =>
+          line.id === id
+            ? { ...line, likes_count: line.likes_count + (isNowLiked ? 1 : -1) }
+            : line
+        )
+      );
+
       setTimeout(() => {
         setShowConfetti(null);
       }, 3000);
@@ -129,151 +194,155 @@ export default function Browse() {
           return newState;
         });
       }, 2000);
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: 'Failed to update like status',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
     }
   };
 
-  const handleShare = async (id: number) => {
-    const card = pickupLines.find(line => line.id === id);
-    if (!card) return;
-
-    try {
-      if (navigator.share) {
+  const handleShare = async (line: PickupLine) => {
+    setAnimatingCards({ ...animatingCards, [line.id]: 'ripple' });
+    
+    if (navigator.share) {
+      try {
         await navigator.share({
           title: 'Check out this pickup line!',
-          text: card.text,
-          url: window.location.href,
+          text: line.text,
+          url: window.location.href
         });
-      } else {
-        await navigator.clipboard.writeText(card.text);
+      } catch (error) {
+        console.error('Error sharing:', error);
       }
-      
-      setAnimatingCards({ ...animatingCards, [id]: 'ripple' });
-      setTimeout(() => {
-        setAnimatingCards(prev => {
-          const newState = { ...prev };
-          delete newState[id];
-          return newState;
-        });
-      }, 1000);
-    } catch (error) {
-      console.error('Error sharing:', error);
+    } else {
+      // Fallback - copy to clipboard
+      navigator.clipboard.writeText(line.text);
+      toast({
+        title: 'Copied!',
+        description: 'Pickup line copied to clipboard',
+        status: 'success',
+        duration: 2000,
+      });
     }
+
+    setTimeout(() => {
+      setAnimatingCards(prev => {
+        const newState = { ...prev };
+        delete newState[line.id];
+        return newState;
+      });
+    }, 1000);
   };
+
+  if (isLoading) {
+    return (
+      <Flex justify="center" align="center" minH="200px">
+        <Spinner size="xl" color="accent.500" />
+      </Flex>
+    );
+  }
+
+  if (error) {
+    return (
+      <Flex justify="center" align="center" minH="200px">
+        <Text color="red.400">{error}</Text>
+      </Flex>
+    );
+  }
 
   return (
     <>
-      <ConfettiExplosion active={showConfetti !== null} />
-      <Grid 
-        templateColumns={{ 
-          base: "1fr",
-          md: "repeat(2, 1fr)",
-          lg: "repeat(3, 1fr)" 
-        }} 
-        gap={8}
-        py={4}
+      {showConfetti && <ConfettiExplosion active={showConfetti !== null} />}
+      
+      <Container maxW="container.xl" mb={6}>
+        <Select
+          value={selectedCategory}
+          onChange={(e) => setSelectedCategory(e.target.value)}
+          bg="darkBg.700"
+          borderColor="darkBg.600"
+          _hover={{ borderColor: 'accent.400' }}
+        >
+          <option value="all">All Categories</option>
+          {categories.map(cat => (
+            <option key={cat.id} value={cat.id}>
+              {cat.emoji} {cat.name}
+            </option>
+          ))}
+        </Select>
+      </Container>
+
+      <Grid
+        templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)', lg: 'repeat(3, 1fr)' }}
+        gap={6}
       >
         {pickupLines.map((line) => (
-          <Card 
-            key={line.id} 
+          <Card
+            key={line.id}
             bg="darkBg.800"
-            borderRadius="2xl"
-            overflow="visible"
-            transition="all 0.3s cubic-bezier(0.17, 0.55, 0.55, 1)"
-            animation={`${float} 6s ease-in-out infinite`}
-            position="relative"
             borderWidth="1px"
-            borderColor="darkBg.700"
-            bgGradient="linear(to-br, darkBg.800, darkBg.700)"
-            style={{
-              animation: animatingCards[line.id] === 'heartBeat'
-                ? `${heartBeat} 1s ease-in-out`
-                : animatingCards[line.id] === 'ripple'
-                ? `${ripple} 1s ease-in-out`
-                : `${float} 6s ease-in-out infinite`
-            }}
+            borderColor={hoveredCard === line.id ? 'accent.500' : 'darkBg.700'}
+            borderRadius="xl"
+            overflow="hidden"
+            transition="all 0.2s"
             _hover={{
-              transform: 'scale(1.05) translateY(-10px)',
-              animation: `${glow} 2s ease-in-out infinite`,
+              transform: 'translateY(-4px)',
               borderColor: 'accent.500',
+              boxShadow: '0 4px 20px rgba(255, 62, 137, 0.2)',
             }}
             onMouseEnter={() => setHoveredCard(line.id)}
             onMouseLeave={() => setHoveredCard(null)}
           >
             <CardBody>
-              <Text 
-                fontSize="lg" 
-                mb={4} 
-                color="white"
-                fontWeight="medium"
-                lineHeight="tall"
-                style={{
-                  transform: hoveredCard === line.id ? 'translateZ(20px)' : 'none',
-                  transition: 'transform 0.3s ease-out'
-                }}
-              >
+              <Text fontSize="lg" mb={4} color="gray.100">
                 {line.text}
               </Text>
-              <Badge 
-                mb={4}
-                px={3}
-                py={1}
-                borderRadius="full"
-                textTransform="capitalize"
-                bgGradient="linear(to-r, accent.500, accent.400)"
-                color="white"
-                style={{
-                  transform: hoveredCard === line.id ? 'translateZ(30px)' : 'none',
-                  transition: 'transform 0.3s ease-out'
-                }}
-              >
-                {line.category}
-              </Badge>
-              <Flex 
-                justify="space-between" 
-                mt={4}
-                style={{
-                  transform: hoveredCard === line.id ? 'translateZ(40px)' : 'none',
-                  transition: 'transform 0.3s ease-out'
-                }}
-              >
-                <Tooltip label={likedCards.includes(line.id) ? "Unlike" : "Like this card"} placement="top">
-                  <IconButton
-                    aria-label="Like"
-                    icon={likedCards.includes(line.id) 
-                      ? <HeartSolidIcon className="w-5 h-5" /> 
-                      : <HeartIcon className="w-5 h-5" />
-                    }
-                    variant="ghost"
-                    colorScheme="pink"
-                    color={likedCards.includes(line.id) ? "accent.400" : "gray.400"}
-                    onClick={() => handleLike(line.id)}
-                    _hover={{ 
-                      transform: 'scale(1.2)',
-                      color: 'accent.400',
-                      bg: 'darkBg.700' 
-                    }}
-                    transition="all 0.2s"
-                    style={{
-                      animation: likedCards.includes(line.id) ? `${heartBeat} 0.5s ease-in-out` : 'none'
-                    }}
-                  />
-                </Tooltip>
-                <Tooltip label="Share this card" placement="top">
-                  <IconButton
-                    aria-label="Share"
-                    icon={<ShareIcon className="w-5 h-5" />}
-                    variant="ghost"
-                    colorScheme="pink"
-                    color="gray.400"
-                    onClick={() => handleShare(line.id)}
-                    _hover={{ 
-                      transform: 'scale(1.2)',
-                      color: 'accent.400',
-                      bg: 'darkBg.700' 
-                    }}
-                    transition="all 0.2s"
-                  />
-                </Tooltip>
+              <Flex justify="space-between" align="center">
+                <Badge
+                  colorScheme="pink"
+                  bg="accent.500"
+                  color="white"
+                  px={2}
+                  py={1}
+                  borderRadius="md"
+                >
+                  {line.category}
+                </Badge>
+                <HStack spacing={2}>
+                  <Tooltip label={likedCards.includes(line.id) ? 'Unlike' : 'Like'}>
+                    <IconButton
+                      aria-label="Like"
+                      icon={likedCards.includes(line.id) ? <HeartSolidIcon /> : <HeartIcon />}
+                      onClick={() => handleLike(line.id)}
+                      variant="ghost"
+                      color={likedCards.includes(line.id) ? 'accent.500' : 'gray.400'}
+                      _hover={{ color: 'accent.500' }}
+                      animation={
+                        animatingCards[line.id] === 'heartBeat'
+                          ? `${heartBeat} 1s ease-in-out`
+                          : undefined
+                      }
+                    />
+                  </Tooltip>
+                  <Tooltip label="Share">
+                    <IconButton
+                      aria-label="Share"
+                      icon={<ShareIcon />}
+                      onClick={() => handleShare(line)}
+                      variant="ghost"
+                      color="gray.400"
+                      _hover={{ color: 'accent.500' }}
+                      animation={
+                        animatingCards[line.id] === 'ripple'
+                          ? `${ripple} 1s cubic-bezier(0, 0, 0.2, 1)`
+                          : undefined
+                      }
+                    />
+                  </Tooltip>
+                </HStack>
               </Flex>
             </CardBody>
           </Card>
